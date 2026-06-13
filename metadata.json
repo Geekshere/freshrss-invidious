@@ -1,0 +1,8 @@
+{
+	"name": "Invidious Video Feed",
+	"author": "Paul Tunbridge (forked from Korbak and Kevin Papst)",
+	"description": "Embed YouTube feeds inside article content using your Invidious instance.",
+	"version": "1.2",
+	"entrypoint": "Invidious",
+	"type": "user"
+}
