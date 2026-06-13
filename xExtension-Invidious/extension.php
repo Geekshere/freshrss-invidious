@@ -53,8 +53,15 @@ class InvidiousExtension extends Minz_Extension
             return;
         }
     
-        $this->registerHook('entry_before_insert', array($this, 'handleInvidious'));    
-        //$this->registerHook('entry_before_display', array($this, 'handleInvidious'));
+        // entry_before_insert only fires for new entries being fetched; already-stored
+        // entries are never processed. entry_before_display runs at render time so all
+        // existing entries work immediately without a re-fetch.
+        // Minz_HookType enum was added in FreshRSS 1.28; fall back to string on older builds.
+        if (class_exists('Minz_HookType')) {
+            $this->registerHook(Minz_HookType::EntryBeforeDisplay, array($this, 'handleInvidious'));
+        } else {
+            $this->registerHook('entry_before_display', array($this, 'handleInvidious'));
+        }
         $this->registerTranslates();
     }
 
@@ -106,26 +113,32 @@ class InvidiousExtension extends Minz_Extension
         {
             $embed_link = $this->getEmbedLink($link);
             $html = $this->getIFrameHtml($embed_link);
-            $html .= '<p>'.$this->getVideoDescriptionFromFeed($entry)."</p>";
-            $this->appendYoutubeLink($html,$link);
+            $html = $this->appendYoutubeLink($html, $link);
+            // strip_tags removes any thumbnail images and links that come from the feed,
+            // leaving only the plain description text.
+            $desc = trim(strip_tags($entry->content() ?? ''));
+            if ($desc !== '') {
+                $html .= '<p>' . $desc . '</p>';
+            }
             
             $entry->_content($html);
         }
         
         //We have a youtube link
-        //We need to embed the invidious video, update the link and fetch the description from our instance
+        //We need to embed the invidious video and show the description from the feed
         else if ($this->isYoutubeURL($link))
         {
             $invidious_link = $this->getInstanceLinkFromYoutubeLink($link);
-            
-            print_r($invidious_link);
-            
             $embed_link = $this->getEmbedLink($invidious_link);
             $html = $this->getIFrameHtml($embed_link);
-            $html .= '<p>'.$this->getVideoDescriptionFromInstance($invidious_link)."</p>";
-            $this->appendYoutubeLink($html,$link);
+            $html = $this->appendYoutubeLink($html, $link);
+            // strip_tags removes any HTML from the stored feed content (including any
+            // back-links to youtube.com that YouTube embeds in the description).
+            $desc = trim(strip_tags($entry->content() ?? ''));
+            if ($desc !== '') {
+                $html .= '<p>' . $desc . '</p>';
+            }
             
-            $entry->_link($invidious_link);
             $entry->_content($html);
         }
         
@@ -174,13 +187,21 @@ class InvidiousExtension extends Minz_Extension
             }
         }
 
-        return $article->saveHTML();
+        $body = $article->getElementsByTagName('body')->item(0);
+        if ($body === null) {
+            return $html;
+        }
+        $result = '';
+        foreach ($body->childNodes as $child) {
+            $result .= $article->saveHTML($child);
+        }
+        return $result;
     }
 
     private function isYoutubeURL(string $url): bool
     {
         $url_info = parse_url($url);
-        $hostname = $url_info['host']; //base URL, which should be invidious instance
+        $hostname = $url_info['host'] ?? '';
         $hostname = str_replace("www.","",$hostname);
             
         return $hostname == 'youtube.com' || $hostname == 'youtube-nocookie.com';
@@ -190,10 +211,10 @@ class InvidiousExtension extends Minz_Extension
     private function isInvidiousURL(string $url): bool 
     {
         $url_info = parse_url($url);
-        $hostname = $url_info['host']; //base URL, which should be invidious instance
+        $hostname = $url_info['host'] ?? '';
         $hostname = str_replace("www.","",$hostname);
         
-        return $hostname == $this->instance || $hostname == "yewtu.be";
+        return $hostname == $this->instance;
     }
     
     //Get the embed link for an invidious video
@@ -206,9 +227,8 @@ class InvidiousExtension extends Minz_Extension
     //Get a formatted "Watch on Youtube" link
     private function getNiceYoutubeLinkText(string $link)
     {
-        //just in case it's originally an invidious feed, we need to make sure it's using the youtube url
-        $yt_url = str_replace($this->instance,"youtube.com",$link);
-        $yt_url = str_replace("yewtu.be","youtube.com",$yt_url);
+        // Convert an Invidious URL back to a youtube.com URL for the link.
+        $yt_url = str_replace($this->instance, "youtube.com", $link);
     
         return '<p><a target="_blank" rel="noreferrer" href="'.$yt_url.'">'.$this->youtube_link_text.'</a></p>';
     }
@@ -216,9 +236,21 @@ class InvidiousExtension extends Minz_Extension
     //Get an invidious link from our youtube link
     private function getInstanceLinkFromYoutubeLink(string $youtube_url): string
     {
-        $watch_url = str_replace("youtube.com",$this->instance,$youtube_url);
-        $watch_url = str_replace("youtube-nocookie.com",$this->instance,$watch_url); 
-        return $watch_url;
+        // Single regex handles all variants in one pass:
+        //   https://www.youtube.com/...
+        //   https://youtube.com/...
+        //   https://www.youtube-nocookie.com/...   ← privacy-enhanced embeds
+        //   https://youtube-nocookie.com/...
+        //   //www.youtube.com/...                  ← protocol-relative
+        // The www. is consumed by the optional (?:www\.)? group so it is never
+        // left orphaned on the front of the instance hostname.
+        $instance = $this->instance;
+        $result = preg_replace_callback(
+            '#^(https?://|//)(?:www\.)?(?:youtube\.com|youtube-nocookie\.com)#i',
+            function ($m) use ($instance) { return $m[1] . $instance; },
+            $youtube_url
+        );
+        return $result ?? $youtube_url;
     }
     
     /**
@@ -243,7 +275,7 @@ class InvidiousExtension extends Minz_Extension
     private function sanitizeInstanceURL()
     {
         $url_info = parse_url($this->instance);
-        $hostname = $url_info['host']; 
+        $hostname = $url_info['host'] ?? '';
         if ($hostname != "")
             $this->instance = $hostname;
     }
