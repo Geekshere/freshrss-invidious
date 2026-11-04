@@ -160,7 +160,7 @@ class InvidiousExtension extends Minz_Extension
         libxml_use_internal_errors(true);
         $article = new DOMDocument;
         $article->validateOnParse = true;
-        $article->loadHTML($html);
+	$article->loadHTML('<?xml encoding="utf-8" ?>' . $html);
         libxml_use_internal_errors(false);
         
         //fix embeds
